@@ -1,9 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  StyleSheet, Text, View, Switch, SafeAreaView, 
-  StatusBar, ScrollView, Platform, TouchableOpacity 
-} from 'react-native';
 import Paho from 'paho-mqtt';
+import React, { useEffect, useState } from 'react';
+import {
+  Platform,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Switch,
+  Text,
+  TouchableOpacity,
+  View
+} from 'react-native';
 
 // ==========================================
 // 1. CẤU HÌNH HỆ THỐNG MQTT TRUNG TÂM
@@ -43,18 +50,12 @@ export default function SmartFarmDashboard() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'relays' | 'history'>('dashboard');
   const [isConnected, setIsConnected] = useState<boolean>(false);
   
-  // State Thông số hiện tại
   const initialSensorState: any = {};
   SENSOR_CONFIG.forEach(s => { initialSensorState[s.key] = "--"; });
   const [sensorData, setSensorData] = useState(initialSensorState);
 
-  // State Lịch sử (Mỗi key chứa 1 mảng các số)
   const [historyData, setHistoryData] = useState<Record<string, number[]>>({});
-  
-  // State chọn thông số nào để xem biểu đồ
   const [selectedChartSensor, setSelectedChartSensor] = useState<string>('temp');
-
-  // State Rơ-le
   const [relayStatus, setRelayStatus] = useState<boolean[]>(Array(10).fill(false));
 
   // ==========================================
@@ -67,35 +68,27 @@ export default function SmartFarmDashboard() {
       useSSL: true, 
       onSuccess: () => {
         setIsConnected(true);
-        console.log("✅ Đã kết nối EMQX Cloud cá nhân!");
         client.subscribe("rangdong/farm/#"); 
       },
-      onFailure: (err: any) => {
-        setIsConnected(false);
-        console.error("❌ Lỗi kết nối MQTT:", err);
-      }
+      onFailure: (err: any) => setIsConnected(false)
     });
 
     client.onMessageArrived = (message: any) => {
       const topic = message.destinationName;
       const payload = message.payloadString;
-      console.log(`📥 DATA: [${topic}] -> ${payload}`);
 
       if (topic.startsWith("rangdong/farm/sensor/")) {
         const sensorKey = topic.replace("rangdong/farm/sensor/", "");
         
-        // 1. Cập nhật số liệu hiển thị tức thời
         setSensorData((prevData: any) => {
           if (sensorKey in prevData) return { ...prevData, [sensorKey]: payload };
           return prevData;
         });
 
-        // 2. Lọc và đẩy vào Lịch sử (Chỉ lấy số liệu hợp lệ)
         const numValue = parseFloat(payload);
         if (!isNaN(numValue)) {
           setHistoryData((prevHistory) => {
             const currentArr = prevHistory[sensorKey] || [];
-            // Giữ lại 10 giá trị gần nhất để đồ thị không bị tràn màn hình
             const newArr = [...currentArr, numValue].slice(-10);
             return { ...prevHistory, [sensorKey]: newArr };
           });
@@ -130,21 +123,72 @@ export default function SmartFarmDashboard() {
       const message = new Paho.Message(command);
       message.destinationName = `rangdong/farm/control/relay${index + 1}`;
       client.send(message);
-      console.log(`📤 LỆNH:  [${message.destinationName}] -> ${command}`);
     }
   };
 
+  // Hàm xử lý chạm vào Sensor -> Trượt sang Lịch sử
+  const handleSensorClick = (key: string) => {
+    setSelectedChartSensor(key);
+    setActiveTab('history');
+  };
+
+  // Nút Back trên góc Header
+  const handleGoBack = () => {
+    setActiveTab('dashboard');
+  };
+
   // ==========================================
-  // 4. THÀNH PHẦN GIAO DIỆN CON
+  // 4. LÕI PHÂN TÍCH & DỰ ĐOÁN (AI EXPERT SYSTEM)
   // ==========================================
-  const SensorWidget = ({ title, value, unit, highlightColor }: any) => (
-    <View style={styles.widgetHalf}>
+  const generateAnalysis = (key: string, dataArr: number[]) => {
+    if (!dataArr || dataArr.length === 0) {
+      return { status: 'loading', message: "Hệ thống đang thu thập dữ liệu để phân tích...", color: '#94A3B8' };
+    }
+
+    const currentVal = dataArr[dataArr.length - 1];
+    const prevVal = dataArr.length > 1 ? dataArr[dataArr.length - 2] : currentVal;
+    const trend = currentVal > prevVal ? 'Tăng' : currentVal < prevVal ? 'Giảm' : 'Ổn định';
+
+    let status = 'normal';
+    let message = `Biến động đang ${trend}. Mọi thứ trong tầm kiểm soát.`;
+    let color = '#2ECC71'; 
+
+    switch (key) {
+      case 'temp':
+        if (currentVal > 35) { status = 'danger'; message = `Cảnh báo: Nhiệt độ quá cao (${currentVal}°C). Cây có nguy cơ héo rũ. Dự đoán: Cần bật ngay Hệ thống Phun sương / Quạt thông gió.`; color = '#E74C3C'; }
+        else if (currentVal < 15) { status = 'warning'; message = `Lưu ý: Nhiệt độ xuống thấp. Cần giữ ấm cho khu vực ươm hạt.`; color = '#F39C12'; }
+        break;
+      case 'soil_hum':
+        if (currentVal < 40) { status = 'danger'; message = `Cảnh báo: Đất quá khô (${currentVal}%). Rễ cây đang thiếu nước. Dự đoán: Đề xuất tự động kích hoạt Rơ-le Máy bơm số 1 trong 15 phút tới.`; color = '#E74C3C'; }
+        else if (currentVal > 85) { status = 'warning'; message = `Lưu ý: Đất đang úng nước. Dễ sinh nấm rễ. Khuyến cáo ngừng tưới.`; color = '#F39C12'; }
+        break;
+      case 'battery':
+        if (currentVal < 20) { status = 'danger'; message = `Nguồn điện trạm Node cạn kiệt. Cần thay pin hoặc kiểm tra tấm pin mặt trời ngay.`; color = '#E74C3C'; }
+        break;
+      case 'uv':
+        if (currentVal > 8) { status = 'warning'; message = `Bức xạ UV rất gắt. Khuyến nghị kéo rèm che nắng tự động (Nhà màng).`; color = '#F39C12'; }
+        break;
+      default:
+        if (dataArr.length > 1 && Math.abs(currentVal - prevVal) / prevVal > 0.3) {
+          status = 'warning'; message = `Phát hiện biến động bất thường (Thay đổi đột ngột). Cần theo dõi thêm.`; color = '#F39C12';
+        }
+        break;
+    }
+
+    return { status, message, color };
+  };
+
+  // ==========================================
+  // 5. THÀNH PHẦN GIAO DIỆN CON
+  // ==========================================
+  const SensorWidget = ({ sensorKey, title, value, unit, highlightColor }: any) => (
+    <TouchableOpacity style={styles.widgetHalf} activeOpacity={0.8} onPress={() => handleSensorClick(sensorKey)}>
       <Text style={styles.widgetTitle} numberOfLines={1}>{title}</Text>
       <View style={styles.valueContainer}>
-        <Text style={[styles.sensorValue, { color: highlightColor }]} numberOfLines={1}>{value}</Text>
+        <Text style={[styles.sensorValue, { color: highlightColor }]} numberOfLines={1} adjustsFontSizeToFit>{value}</Text>
         <Text style={styles.unitText}>{unit}</Text>
       </View>
-    </View>
+    </TouchableOpacity>
   );
 
   const ActuatorWidget = ({ title, isActive, onToggle, activeColor }: any) => (
@@ -160,51 +204,54 @@ export default function SmartFarmDashboard() {
     </View>
   );
 
-  // Khối vẽ đồ thị Cột (Custom Bar Chart)
-  const CustomBarChart = ({ data, color, unit }: { data: number[], color: string, unit: string }) => {
-    if (!data || data.length === 0) {
-      return (
-        <View style={styles.emptyChart}>
-          <Text style={styles.emptyChartText}>Đang chờ dữ liệu từ thiết bị...</Text>
-        </View>
-      );
-    }
-
+  const CustomBarChart = ({ data, color }: { data: number[], color: string }) => {
+    if (!data || data.length === 0) return (
+      <View style={styles.emptyChart}><Text style={styles.emptyChartText}>Đang chờ dữ liệu vẽ biểu đồ...</Text></View>
+    );
     const max = Math.max(...data);
     const min = Math.min(...data);
-    const range = (max - min) === 0 ? 1 : (max - min); // Tránh chia cho 0
+    const range = (max - min) === 0 ? 1 : (max - min);
 
     return (
       <View style={styles.chartContainer}>
-        {data.map((val, idx) => {
-          // Tính toán chiều cao cột (Tối thiểu 15%, tối đa 100%)
-          const heightPct = Math.max(15, ((val - min) / range) * 100);
-          return (
-            <View key={idx} style={styles.chartBarWrapper}>
-              <Text style={styles.chartValueLabel}>{val}</Text>
-              <View style={[styles.chartBar, { height: `${heightPct}%`, backgroundColor: color }]} />
-            </View>
-          );
-        })}
+        {data.map((val, idx) => (
+          <View key={idx} style={styles.chartBarWrapper}>
+            <Text style={styles.chartValueLabel}>{val}</Text>
+            <View style={[styles.chartBar, { height: `${Math.max(15, ((val - min) / range) * 100)}%`, backgroundColor: color }]} />
+          </View>
+        ))}
       </View>
     );
   };
 
-  // Lấy cấu hình của cảm biến đang được chọn để vẽ chart
   const currentChartConfig = SENSOR_CONFIG.find(s => s.key === selectedChartSensor);
+  const analysisResult = currentChartConfig ? generateAnalysis(selectedChartSensor, historyData[selectedChartSensor]) : null;
 
   // ==========================================
-  // 5. GIAO DIỆN CHÍNH
+  // 6. GIAO DIỆN CHÍNH
   // ==========================================
   return (
     <SafeAreaView style={styles.mainContainer}>
       <StatusBar barStyle="dark-content" backgroundColor="#F4F7FB" />
       
+      {/* HEADER AREA */}
       <View style={styles.headerArea}>
-        <View>
-          <Text style={styles.appTitle}>SMART FARM</Text>
-          <Text style={styles.appSubtitle}>Hệ thống giám sát trung tâm</Text>
+        <View style={styles.headerLeftArea}>
+          {/* NÚT BACK (Hiển thị khi không ở trang chủ) */}
+          {activeTab !== 'dashboard' && (
+            <TouchableOpacity style={styles.backButton} onPress={handleGoBack} activeOpacity={0.6}>
+              <Text style={styles.backButtonIcon}>❮</Text>
+            </TouchableOpacity>
+          )}
+          <View>
+            <Text style={styles.appTitle}>SMART FARM</Text>
+            <Text style={styles.appSubtitle}>
+              {activeTab === 'dashboard' ? 'Hệ thống giám sát trung tâm' : activeTab === 'history' ? 'Phân tích dữ liệu lịch sử' : 'Bảng điều khiển thiết bị'}
+            </Text>
+          </View>
         </View>
+
+        {/* TRẠNG THÁI MẠNG BÊN PHẢI */}
         <View style={[styles.networkBadge, { backgroundColor: isConnected ? '#E8F8F5' : '#FDEDEC' }]}>
           <View style={[styles.pulseDot, { backgroundColor: isConnected ? '#2ECC71' : '#E74C3C' }]} />
           <Text style={[styles.networkText, { color: isConnected ? '#27AE60' : '#C0392B' }]}>
@@ -222,8 +269,11 @@ export default function SmartFarmDashboard() {
             <View style={styles.rowLayoutGrid}>
               {SENSOR_CONFIG.map((sensor) => (
                 <SensorWidget 
-                  key={sensor.key} title={sensor.title} 
-                  value={sensorData[sensor.key]} unit={sensor.unit} 
+                  key={sensor.key} 
+                  sensorKey={sensor.key}
+                  title={sensor.title} 
+                  value={sensorData[sensor.key]} 
+                  unit={sensor.unit} 
                   highlightColor={sensor.color} 
                 />
               ))}
@@ -247,13 +297,11 @@ export default function SmartFarmDashboard() {
           </>
         )}
 
-        {/* TRANG 3: BIỂU ĐỒ LỊCH SỬ */}
-        {activeTab === 'history' && currentChartConfig && (
+        {/* TRANG 3: BIỂU ĐỒ LỊCH SỬ & AI */}
+        {activeTab === 'history' && currentChartConfig && analysisResult && (
           <>
             <Text style={styles.sectionHeader}>CHỌN THÔNG SỐ CẦN THEO DÕI</Text>
-            
-            {/* Thanh cuộn ngang chọn Sensor */}
-            <View style={{ height: 60, marginBottom: 20 }}>
+            <View style={{ height: 60, marginBottom: 10 }}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 {SENSOR_CONFIG.map((sensor) => (
                   <TouchableOpacity 
@@ -275,12 +323,19 @@ export default function SmartFarmDashboard() {
                 <Text style={styles.chartTitle}>Biểu đồ {currentChartConfig.title.toLowerCase()}</Text>
                 <Text style={styles.chartUnit}>Đơn vị: {currentChartConfig.unit}</Text>
               </View>
-              
-              <CustomBarChart 
-                data={historyData[selectedChartSensor] || []} 
-                color={currentChartConfig.color}
-                unit={currentChartConfig.unit}
-              />
+              <CustomBarChart data={historyData[selectedChartSensor] || []} color={currentChartConfig.color} />
+            </View>
+
+            {/* Khối Nhận Xét & Đánh Giá */}
+            <Text style={[styles.sectionHeader, { marginTop: 25 }]}>PHÂN TÍCH & DỰ ĐOÁN</Text>
+            <View style={[styles.analysisCard, { borderLeftColor: analysisResult.color }]}>
+              <View style={styles.analysisHeader}>
+                <View style={[styles.statusDot, { backgroundColor: analysisResult.color }]} />
+                <Text style={[styles.analysisStatus, { color: analysisResult.color }]}>
+                  {analysisResult.status === 'danger' ? 'NGUY HIỂM' : analysisResult.status === 'warning' ? 'CẢNH BÁO' : analysisResult.status === 'normal' ? 'AN TOÀN' : 'HỆ THỐNG'}
+                </Text>
+              </View>
+              <Text style={styles.analysisMessage}>{analysisResult.message}</Text>
             </View>
           </>
         )}
@@ -295,7 +350,7 @@ export default function SmartFarmDashboard() {
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.tabButton} onPress={() => setActiveTab('history')} activeOpacity={0.7}>
-          <Text style={[styles.tabButtonText, activeTab === 'history' && styles.tabButtonTextActive]}>LỊCH SỬ</Text>
+          <Text style={[styles.tabButtonText, activeTab === 'history' && styles.tabButtonTextActive]}>LỊCH SỬ & AI</Text>
           {activeTab === 'history' && <View style={styles.activeIndicator} />}
         </TouchableOpacity>
 
@@ -309,16 +364,25 @@ export default function SmartFarmDashboard() {
 }
 
 // ==========================================
-// 6. HỆ THỐNG KIỂU DÁNG (STYLESHEET)
+// 7. STYLESHEET CHUẨN XÁC
 // ==========================================
 const styles = StyleSheet.create({
   mainContainer: { flex: 1, backgroundColor: '#F4F7FB' },
+  
   headerArea: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 22, paddingTop: Platform.OS === 'android' ? 40 : 20, paddingBottom: 20, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
+  headerLeftArea: { flexDirection: 'row', alignItems: 'center' },
+  
+  // Style cho nút Back trên Header
+  backButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F1F5F9', justifyContent: 'center', alignItems: 'center', marginRight: 15 },
+  backButtonIcon: { fontSize: 20, fontWeight: '900', color: '#1E293B', marginLeft: -3 },
+
   appTitle: { fontSize: 24, fontWeight: '900', color: '#1E293B', letterSpacing: 0.5 },
   appSubtitle: { fontSize: 13, color: '#64748B', marginTop: 4, fontWeight: '500' },
+  
   networkBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20 },
   pulseDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
   networkText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
+  
   dashboardScroll: { padding: 22, paddingBottom: 20 },
   sectionHeader: { fontSize: 14, fontWeight: '800', color: '#94A3B8', letterSpacing: 1.2, marginBottom: 16, marginTop: 10, textTransform: 'uppercase' },
   
@@ -333,7 +397,6 @@ const styles = StyleSheet.create({
   actuatorCardCompact: { width: '48%', backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 16, flexDirection: 'column', alignItems: 'flex-start', gap: 12, shadowColor: "#64748B", shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.06, shadowRadius: 12, elevation: 2 },
   widgetTitleCompact: { fontSize: 14, fontWeight: '700', color: '#475569' },
   
-  // Style cho Tab Lịch sử & Biểu đồ
   chipButton: { paddingHorizontal: 16, paddingVertical: 10, backgroundColor: '#FFFFFF', borderRadius: 20, marginRight: 10, borderWidth: 1, borderColor: '#E2E8F0', justifyContent: 'center' },
   chipText: { fontSize: 13, fontWeight: '700', color: '#64748B' },
   chipTextActive: { color: '#FFFFFF' },
@@ -342,16 +405,19 @@ const styles = StyleSheet.create({
   chartHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 30 },
   chartTitle: { fontSize: 16, fontWeight: '800', color: '#1E293B' },
   chartUnit: { fontSize: 13, fontWeight: '600', color: '#94A3B8' },
-  
   emptyChart: { height: 200, justifyContent: 'center', alignItems: 'center' },
   emptyChartText: { color: '#94A3B8', fontWeight: '600', fontStyle: 'italic' },
-  
   chartContainer: { height: 220, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
   chartBarWrapper: { alignItems: 'center', width: '8%', height: '100%', justifyContent: 'flex-end' },
   chartValueLabel: { fontSize: 10, color: '#64748B', fontWeight: '700', marginBottom: 6 },
   chartBar: { width: '100%', borderTopLeftRadius: 6, borderTopRightRadius: 6 },
 
-  // Bottom Tab
+  analysisCard: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 20, borderLeftWidth: 5, shadowColor: "#64748B", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
+  analysisHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  statusDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
+  analysisStatus: { fontSize: 14, fontWeight: '900', letterSpacing: 0.5 },
+  analysisMessage: { fontSize: 15, color: '#475569', lineHeight: 22, fontWeight: '500' },
+
   bottomTabBar: { flexDirection: 'row', backgroundColor: '#FFFFFF', borderTopWidth: 1, borderTopColor: '#E2E8F0', paddingBottom: Platform.OS === 'ios' ? 20 : 0 },
   tabButton: { flex: 1, paddingVertical: 18, alignItems: 'center', justifyContent: 'center', position: 'relative' },
   tabButtonText: { fontSize: 13, fontWeight: '700', color: '#94A3B8' },
